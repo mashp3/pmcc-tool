@@ -212,3 +212,15 @@ if st.session_state['strikes_data']:
 
             except Exception as e:
                 st.error(f"分析エラー: {e}")
+
+# --- 以下を app.py の一番最後に追加してください ---
+
+# 余計なメニューやフッターを隠すCSS
+hide_streamlit_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            </style>
+            """
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
