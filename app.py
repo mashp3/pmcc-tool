@@ -3,8 +3,33 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import japanize_matplotlib
+import matplotlib.font_manager as fm
 from datetime import datetime
+import os
+import requests
+
+# --- フォント設定 (japanize-matplotlibの代わり) ---
+def setup_japanese_font():
+    # フォントファイル名
+    font_filename = "NotoSansJP-Regular.ttf"
+    
+    # ファイルがなければGoogle Fontsからダウンロード
+    if not os.path.exists(font_filename):
+        url = "https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP-Regular.ttf"
+        try:
+            response = requests.get(url)
+            with open(font_filename, "wb") as f:
+                f.write(response.content)
+        except:
+            pass # ダウンロード失敗時はデフォルトフォント
+
+    # フォントをmatplotlibに登録
+    if os.path.exists(font_filename):
+        fm.fontManager.addfont(font_filename)
+        plt.rcParams['font.family'] = fm.FontProperties(fname=font_filename).get_name()
+
+# アプリ起動時にフォント設定を実行
+setup_japanese_font()
 
 # ページ設定
 st.set_page_config(page_title="PMCC Analyzer", layout="wide")
