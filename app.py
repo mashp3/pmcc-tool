@@ -42,7 +42,6 @@ st.markdown("""
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         
-        /* 固定ヘッダー */
         .fixed-header {
             position: fixed;
             top: 0;
@@ -71,7 +70,7 @@ st.markdown("""
         }
     </style>
     <div class="fixed-header">
-        <span class="header-text">🇯🇵 PMCC 分析ツール (Ver 3.5)</span>
+        <span class="header-text">🇯🇵 PMCC 分析ツール (Ver 3.6)</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -116,4 +115,57 @@ with st.sidebar:
 # ==========================================
 # 3. メイン処理
 # ==========================================
-default_ticker
+# 【重要】変数の定義（ここが消えていた可能性があります）
+default_ticker = "NVDA"
+if st.session_state['load_trigger']:
+    default_ticker = st.session_state['load_trigger']['ticker']
+
+col1, col2 = st.columns([3, 1])
+with col1:
+    ticker_input = st.text_input("銘柄", value=default_ticker, label_visibility="collapsed", placeholder="銘柄コード").upper()
+with col2:
+    fetch_pressed = st.button("データ取得", type="primary", use_container_width=True)
+
+if fetch_pressed or st.session_state['load_trigger']:
+    with st.spinner("データ取得中..."):
+        price, exps, err = fetch_ticker_info(ticker_input)
+        if err:
+            st.error(f"Error: {err}")
+            st.session_state['load_trigger'] = None
+        else:
+            st.session_state['ticker_data'] = {'price': price, 'exps': exps, 'ticker': ticker_input}
+            st.session_state['strikes_data'] = None
+            if fetch_pressed: st.session_state['load_trigger'] = None
+
+# --- 満期日選択 ---
+if st.session_state['ticker_data']:
+    data = st.session_state['ticker_data']
+    loaded = st.session_state.get('load_trigger')
+    
+    st.markdown(f"**現在株価: ${data['price']:.2f}**")
+    
+    c1, c2 = st.columns(2)
+    l_idx = len(data['exps']) - 1
+    s_idx = 1 if len(data['exps']) > 1 else 0
+
+    if loaded:
+        if loaded['long_exp'] in data['exps']: l_idx = data['exps'].index(loaded['long_exp'])
+        if loaded['short_exp'] in data['exps']: s_idx = data['exps'].index(loaded['short_exp'])
+
+    with c1: long_exp = st.selectbox("Long満期", data['exps'], index=l_idx)
+    with c2: short_exp = st.selectbox("Short満期", data['exps'], index=s_idx)
+
+    auto_load = False
+    if loaded:
+        auto_load = True
+        st.session_state['load_trigger'] = None
+
+    if st.button("ストライク読込", use_container_width=True) or auto_load:
+        with st.spinner("チェーン取得中..."):
+            l_chain, err1 = fetch_option_chain_data(data['ticker'], long_exp)
+            s_chain, err2 = fetch_option_chain_data(data['ticker'], short_exp)
+            
+            if err1 or err2:
+                st.error("取得エラー")
+            else:
+                strikes_l = sorted(l
