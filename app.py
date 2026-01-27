@@ -13,10 +13,9 @@ plt.rcParams['font.family'] = 'IPAGothic'
 st.set_page_config(page_title="PMCC Analyzer", layout="wide")
 
 # ==========================================
-# 0. 接続設定 (偽装工作 & キャッシュ)
+# 0. 接続設定
 # ==========================================
 def get_custom_session():
-    """ブラウザのふりをするためのセッション作成"""
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -26,7 +25,6 @@ def get_custom_session():
 @st.cache_data(ttl=600)
 def fetch_ticker_info(ticker):
     try:
-        # カスタムセッションを使ってブラウザを偽装
         tk = yf.Ticker(ticker, session=get_custom_session())
         hist = tk.history(period='1d')
         if hist.empty: return None, None, "データなし"
@@ -61,11 +59,10 @@ st.markdown("""
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .block-container { padding-top: 60px !important; }
-        /* テーブルの文字サイズ調整 */
         .stTable { font-size: 14px; }
     </style>
     <div class="fixed-header">
-        <span class="header-text">🇯🇵 PMCC 分析ツール (Ver 5.0 Stable)</span>
+        <span class="header-text">🇯🇵 PMCC 分析ツール (Ver 6.0)</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -83,7 +80,6 @@ if 'manual_mode' not in st.session_state:
 
 with st.sidebar:
     st.header("⚙️ 設定")
-    # --- 【改良点】手動モードスイッチ ---
     st.session_state['manual_mode'] = st.toggle("手動入力モード (APIエラー時用)", value=st.session_state['manual_mode'])
     
     st.divider()
@@ -97,24 +93,62 @@ with st.sidebar:
     c1, c2 = st.columns(2)
     with c1:
         if st.button("保存", use_container_width=True):
-            # 簡易保存 (手動モード対応は複雑になるため、現状は自動モードの保存を優先)
-            if not st.session_state['manual_mode'] and st.session_state.get('ticker_data'):
+            save_timestamp = datetime.now().strftime('%m/%d %H:%M')
+            
+            # --- 手動モードの保存 ---
+            if st.session_state['manual_mode']:
+                # 入力ウィジェットのキー(m_*)から値を取得して保存
+                if 'm_ticker' in st.session_state:
+                    st.session_state['portfolios'][selected_slot] = {
+                        'type': 'manual',
+                        'ticker': st.session_state.m_ticker,
+                        'price': st.session_state.m_price,
+                        'long_strike': st.session_state.m_l_strike,
+                        'prem_l': st.session_state.m_l_prem,
+                        'short_strike': st.session_state.m_s_strike,
+                        'prem_s': st.session_state.m_s_prem,
+                        'save_date': save_timestamp
+                    }
+                    st.success("手動データを保存!")
+                    st.rerun()
+                else:
+                    st.error("保存するデータがありません")
+            
+            # --- 自動モードの保存 ---
+            elif st.session_state.get('ticker_data'):
                 st.session_state['portfolios'][selected_slot] = {
+                    'type': 'auto',
                     'ticker': st.session_state['ticker_data']['ticker'],
                     'long_exp': st.session_state['strikes_data']['long_exp'],
                     'short_exp': st.session_state['strikes_data']['short_exp'],
-                    'save_date': datetime.now().strftime('%m/%d %H:%M')
+                    'save_date': save_timestamp
                 }
-                st.success("保存!")
+                st.success("自動データを保存!")
                 st.rerun()
-            elif st.session_state['manual_mode']:
-                st.warning("手動モードは保存できません")
+            else:
+                st.error("データなし")
+
     with c2:
         if st.button("読込", use_container_width=True):
             if saved:
-                st.session_state['load_trigger'] = saved
-                st.session_state['manual_mode'] = False # 読込時は自動モードへ
-                st.rerun()
+                if saved.get('type') == 'manual':
+                    # 手動データのロード
+                    st.session_state['manual_mode'] = True
+                    # ウィジェットのキーに値をセット
+                    st.session_state['m_ticker'] = saved['ticker']
+                    st.session_state['m_price'] = saved['price']
+                    st.session_state['m_l_strike'] = saved['long_strike']
+                    st.session_state['m_l_prem'] = saved['prem_l']
+                    st.session_state['m_s_strike'] = saved['short_strike']
+                    st.session_state['m_s_prem'] = saved['prem_s']
+                    st.rerun()
+                else:
+                    # 自動データのロード
+                    st.session_state['load_trigger'] = saved
+                    st.session_state['manual_mode'] = False
+                    st.rerun()
+            else:
+                st.warning("空です")
 
 # ==========================================
 # 3. メイン処理 (条件分岐)
@@ -125,38 +159,40 @@ long_strike = 0.0
 short_strike = 0.0
 prem_l = 0.0
 prem_s = 0.0
-is_ready = False # 計算準備完了フラグ
+is_ready = False
 ticker_name = "MANUAL"
 
 if st.session_state['manual_mode']:
     # ==========================================
     # A. 手動入力モード (APIなし)
     # ==========================================
-    st.info("📝 **手動入力モード**: 証券口座の画面を見ながら数値を入力してください。")
+    st.info("📝 **手動入力モード** (保存可能)")
     
     col_m1, col_m2 = st.columns(2)
     with col_m1:
-        ticker_name = st.text_input("銘柄名 (表示用)", "NVDA").upper()
-        price = st.number_input("現在株価 ($)", value=100.0, step=0.1, format="%.2f")
+        # keyを設定してsession_stateからアクセス可能にする
+        ticker_name = st.text_input("銘柄名", value="NVDA", key="m_ticker").upper()
+        price = st.number_input("現在株価 ($)", value=100.0, step=0.1, format="%.2f", key="m_price")
     
     st.divider()
     
     c_l, c_s = st.columns(2)
     with c_l:
         st.subheader("Long (LEAPS)")
-        long_strike = st.number_input("権利行使価格 (Long)", value=80.0, step=1.0)
-        prem_l = st.number_input("支払プレミアム (Ask)", value=25.0, step=0.1)
+        long_strike = st.number_input("権利行使価格 (Long)", value=80.0, step=1.0, key="m_l_strike")
+        prem_l = st.number_input("支払プレミアム (Ask)", value=25.0, step=0.1, key="m_l_prem")
     with c_s:
         st.subheader("Short (Call)")
-        short_strike = st.number_input("権利行使価格 (Short)", value=130.0, step=1.0)
-        prem_s = st.number_input("受取プレミアム (Bid)", value=5.0, step=0.1)
+        short_strike = st.number_input("権利行使価格 (Short)", value=130.0, step=1.0, key="m_s_strike")
+        prem_s = st.number_input("受取プレミアム (Bid)", value=5.0, step=0.1, key="m_s_prem")
     
-    if st.button("この条件で分析する", type="primary"):
+    # 手動モードは常に分析可能な状態とみなす(値が入っていれば)
+    if price > 0:
         is_ready = True
 
 else:
     # ==========================================
-    # B. 自動取得モード (従来通り)
+    # B. 自動取得モード
     # ==========================================
     default_ticker = "NVDA"
     if st.session_state['load_trigger']:
@@ -170,18 +206,16 @@ else:
 
     if fetch_pressed or st.session_state['load_trigger']:
         with st.spinner("データ取得中..."):
-            # 【改良点】偽装セッションでの取得
             p_val, exps, err = fetch_ticker_info(ticker_input)
             if err:
                 st.error(f"Error: {err}")
-                st.warning("👉 サイドバーから「手動入力モード」をONにすると、分析を続行できます。")
+                st.warning("👉 サイドバーから「手動入力モード」をONにしてください。")
                 st.session_state['load_trigger'] = None
             else:
                 st.session_state['ticker_data'] = {'price': p_val, 'exps': exps, 'ticker': ticker_input}
                 st.session_state['strikes_data'] = None
                 if fetch_pressed: st.session_state['load_trigger'] = None
 
-    # 自動モードの続き
     if st.session_state['ticker_data']:
         data = st.session_state['ticker_data']
         loaded = st.session_state.get('load_trigger')
@@ -241,7 +275,6 @@ else:
                 short_strike = st.selectbox("Short Strike", s_data['strikes_s'], index=d_idx)
             
             if st.button("分析実行", type="primary", use_container_width=True):
-                # 自動モードでの価格取得
                 l_chain, _ = fetch_option_chain_data(ticker_name, s_data['long_exp'])
                 s_chain, _ = fetch_option_chain_data(ticker_name, s_data['short_exp'])
                 l_row = l_chain[l_chain['strike'] == long_strike].iloc[0]
@@ -257,7 +290,7 @@ else:
                 is_ready = True
 
 # ==========================================
-# 4. 共通分析ロジック & 内訳テーブル表示
+# 4. 分析レポート & 内訳テーブル
 # ==========================================
 if is_ready:
     try:
@@ -267,10 +300,8 @@ if is_ready:
         
         st.markdown(f"### 📊 分析レポート ({ticker_name})")
         
-        # --- 【改良点】利益内訳テーブル ---
+        # --- 内訳テーブル ---
         st.markdown("##### 📋 シナリオ別 損益内訳")
-        
-        # シナリオ作成 (現在値、分岐点、Short行使)
         scenarios = [
             {"name": f"現在値 (${price:.2f})", "p": price},
             {"name": f"損益分岐 (${breakeven:.2f})", "p": breakeven},
@@ -280,17 +311,11 @@ if is_ready:
         table_data = []
         for sc in scenarios:
             p = sc["p"]
-            # 1. LEAPS価値 (満期時: 株価 - Longストライク)
             val_l = max(0, p - long_strike)
-            # 2. Short義務 (満期時: 株価 - Shortストライク)
             val_s = max(0, p - short_strike)
-            # 3. 初期コスト (固定)
             cost = -net_debit
-            
-            # 合計
             total = val_l - val_s + cost
             
-            # 表示用に整形
             table_data.append({
                 "シナリオ": sc["name"],
                 "LEAPS価値 (+)": f"${val_l:.2f}",
@@ -300,7 +325,7 @@ if is_ready:
             })
             
         st.table(pd.DataFrame(table_data))
-        # -----------------------------------
+        # -------------------
 
         m1, m2, m3 = st.columns(3)
         m1.metric("実質コスト", f"${net_debit:.2f}")
