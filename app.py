@@ -70,12 +70,12 @@ st.markdown("""
         }
     </style>
     <div class="fixed-header">
-        <span class="header-text">🇯🇵 PMCC 分析ツール (Ver 3.7)</span>
+        <span class="header-text">🇯🇵 PMCC 分析ツール (Ver 4.0)</span>
     </div>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. ポートフォリオ機能 (サイドバー)
+# 2. ポートフォリオ機能
 # ==========================================
 if 'portfolios' not in st.session_state:
     st.session_state['portfolios'] = {f"Slot {i+1}": None for i in range(5)}
@@ -115,19 +115,16 @@ with st.sidebar:
 # ==========================================
 # 3. メイン処理 (入力フォーム)
 # ==========================================
-# 変数定義 (ここが消えやすいので注意！)
 default_ticker = "NVDA"
 if st.session_state['load_trigger']:
     default_ticker = st.session_state['load_trigger']['ticker']
 
-# 入力エリア作成
 col1, col2 = st.columns([3, 1])
 with col1:
     ticker_input = st.text_input("銘柄", value=default_ticker, label_visibility="collapsed", placeholder="銘柄コード").upper()
 with col2:
     fetch_pressed = st.button("データ取得", type="primary", use_container_width=True)
 
-# データ取得実行
 if fetch_pressed or st.session_state['load_trigger']:
     with st.spinner("データ取得中..."):
         price, exps, err = fetch_ticker_info(ticker_input)
@@ -217,7 +214,6 @@ if st.session_state['strikes_data']:
             l_row = l_chain[l_chain['strike'] == long_strike].iloc[0]
             s_row = s_chain[s_chain['strike'] == short_strike].iloc[0]
             
-            # --- 0ドル対策 ---
             def get_valid_price(row, col_name):
                 val = row.get(col_name, 0)
                 if pd.isna(val) or val <= 0: return row.get('lastPrice', 0)
@@ -230,7 +226,42 @@ if st.session_state['strikes_data']:
             total_cost = net_debit * 100
             breakeven = long_strike + net_debit
             
-            st.markdown("### 📊 分析レポート")
+            # --- ここから新規: 内訳シナリオ分析テーブル ---
+            st.markdown("### 📋 利益内訳シミュレーション")
+            
+            # 3つのシナリオ: 現在値、損益分岐点、Short権利行使価格(Max Profit付近)
+            scenarios = [
+                {"name": f"現在値 (${price:.2f})", "p": price},
+                {"name": f"損益分岐 (${breakeven:.2f})", "p": breakeven},
+                {"name": f"Short行使 (${short_strike:.2f})", "p": short_strike},
+            ]
+            
+            scenario_data = []
+            for sc in scenarios:
+                p = sc["p"]
+                # 1. LEAPS価値 (満期時)
+                val_l = max(0, p - long_strike)
+                # 2. Short義務 (損失)
+                val_s = max(0, p - short_strike)
+                # 3. プレミアム (初期コスト)
+                cost = -net_debit # 支払った分なのでマイナス表記
+                
+                # 合計 (LEAPS価値 - Short義務 - コスト)
+                total = val_l - val_s + cost
+                
+                scenario_data.append({
+                    "シナリオ": sc["name"],
+                    "LEAPS価値(+)": f"${val_l:.2f}",
+                    "Short義務(-)": f"-${val_s:.2f}",
+                    "初期コスト(-)": f"-${net_debit:.2f}",
+                    "合計損益": f"${total:.2f}"
+                })
+            
+            df_scenario = pd.DataFrame(scenario_data)
+            st.table(df_scenario)
+            # ------------------------------------------
+
+            st.markdown("### 📊 全体チャート & 詳細")
             m1, m2, m3 = st.columns(3)
             m1.metric("実質コスト", f"${net_debit:.2f}")
             m2.metric("初期投資", f"${total_cost:.0f}")
@@ -255,8 +286,8 @@ if st.session_state['strikes_data']:
             ax.legend(['P&L', 'Zero Line', 'Current', 'Breakeven'])
             st.pyplot(fig)
 
-            # テーブル表示
-            with st.expander("詳細テーブル"):
+            # 詳細テーブル(折りたたみ)
+            with st.expander("詳細な価格推移表を見る"):
                 sim_prices = np.linspace(price * 0.7, price * 1.3, 11)
                 data_list = []
                 for p in sim_prices:
