@@ -62,7 +62,7 @@ st.markdown("""
         .stTable { font-size: 14px; }
     </style>
     <div class="fixed-header">
-        <span class="header-text">🇯🇵 PMCC 分析ツール (Ver 6.0)</span>
+        <span class="header-text">🇯🇵 PMCC 分析ツール (Ver 6.1)</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -74,7 +74,6 @@ if 'portfolios' not in st.session_state:
 for key in ['ticker_data', 'strikes_data', 'load_trigger']:
     if key not in st.session_state: st.session_state[key] = None
 
-# 手動モードの状態管理
 if 'manual_mode' not in st.session_state:
     st.session_state['manual_mode'] = False
 
@@ -94,10 +93,7 @@ with st.sidebar:
     with c1:
         if st.button("保存", use_container_width=True):
             save_timestamp = datetime.now().strftime('%m/%d %H:%M')
-            
-            # --- 手動モードの保存 ---
             if st.session_state['manual_mode']:
-                # 入力ウィジェットのキー(m_*)から値を取得して保存
                 if 'm_ticker' in st.session_state:
                     st.session_state['portfolios'][selected_slot] = {
                         'type': 'manual',
@@ -111,10 +107,7 @@ with st.sidebar:
                     }
                     st.success("手動データを保存!")
                     st.rerun()
-                else:
-                    st.error("保存するデータがありません")
-            
-            # --- 自動モードの保存 ---
+                else: st.error("保存するデータがありません")
             elif st.session_state.get('ticker_data'):
                 st.session_state['portfolios'][selected_slot] = {
                     'type': 'auto',
@@ -125,16 +118,13 @@ with st.sidebar:
                 }
                 st.success("自動データを保存!")
                 st.rerun()
-            else:
-                st.error("データなし")
+            else: st.error("データなし")
 
     with c2:
         if st.button("読込", use_container_width=True):
             if saved:
                 if saved.get('type') == 'manual':
-                    # 手動データのロード
                     st.session_state['manual_mode'] = True
-                    # ウィジェットのキーに値をセット
                     st.session_state['m_ticker'] = saved['ticker']
                     st.session_state['m_price'] = saved['price']
                     st.session_state['m_l_strike'] = saved['long_strike']
@@ -143,12 +133,10 @@ with st.sidebar:
                     st.session_state['m_s_prem'] = saved['prem_s']
                     st.rerun()
                 else:
-                    # 自動データのロード
                     st.session_state['load_trigger'] = saved
                     st.session_state['manual_mode'] = False
                     st.rerun()
-            else:
-                st.warning("空です")
+            else: st.warning("空です")
 
 # ==========================================
 # 3. メイン処理 (条件分岐)
@@ -164,13 +152,12 @@ ticker_name = "MANUAL"
 
 if st.session_state['manual_mode']:
     # ==========================================
-    # A. 手動入力モード (APIなし)
+    # A. 手動入力モード
     # ==========================================
     st.info("📝 **手動入力モード** (保存可能)")
     
     col_m1, col_m2 = st.columns(2)
     with col_m1:
-        # keyを設定してsession_stateからアクセス可能にする
         ticker_name = st.text_input("銘柄名", value="NVDA", key="m_ticker").upper()
         price = st.number_input("現在株価 ($)", value=100.0, step=0.1, format="%.2f", key="m_price")
     
@@ -186,8 +173,7 @@ if st.session_state['manual_mode']:
         short_strike = st.number_input("権利行使価格 (Short)", value=130.0, step=1.0, key="m_s_strike")
         prem_s = st.number_input("受取プレミアム (Bid)", value=5.0, step=0.1, key="m_s_prem")
     
-    # 手動モードは常に分析可能な状態とみなす(値が入っていれば)
-    if price > 0:
+    if st.button("この条件で分析する", type="primary"):
         is_ready = True
 
 else:
@@ -293,6 +279,15 @@ else:
 # 4. 分析レポート & 内訳テーブル
 # ==========================================
 if is_ready:
+    # 【重要】手動モードの場合、画面の数値を強制的に適用する
+    if st.session_state['manual_mode']:
+        ticker_name = st.session_state.m_ticker
+        price = st.session_state.m_price
+        long_strike = st.session_state.m_l_strike
+        prem_l = st.session_state.m_l_prem
+        short_strike = st.session_state.m_s_strike
+        prem_s = st.session_state.m_s_prem
+        
     try:
         net_debit = prem_l - prem_s
         total_cost = net_debit * 100
