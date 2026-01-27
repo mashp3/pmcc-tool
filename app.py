@@ -83,7 +83,7 @@ if 'manual_mode' not in st.session_state:
 
 with st.sidebar:
     st.header("⚙️ 設定")
-    # --- 【改良点2】手動モードスイッチ ---
+    # --- 【改良点】手動モードスイッチ ---
     st.session_state['manual_mode'] = st.toggle("手動入力モード (APIエラー時用)", value=st.session_state['manual_mode'])
     
     st.divider()
@@ -170,7 +170,7 @@ else:
 
     if fetch_pressed or st.session_state['load_trigger']:
         with st.spinner("データ取得中..."):
-            # 【改良点1】偽装セッションでの取得
+            # 【改良点】偽装セッションでの取得
             p_val, exps, err = fetch_ticker_info(ticker_input)
             if err:
                 st.error(f"Error: {err}")
@@ -267,7 +267,7 @@ if is_ready:
         
         st.markdown(f"### 📊 分析レポート ({ticker_name})")
         
-        # --- 【改良点3】利益内訳テーブル ---
+        # --- 【改良点】利益内訳テーブル ---
         st.markdown("##### 📋 シナリオ別 損益内訳")
         
         # シナリオ作成 (現在値、分岐点、Short行使)
