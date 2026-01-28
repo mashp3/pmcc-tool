@@ -1,6 +1,6 @@
 streamlit
-yfinance
+yfinance>=0.2.50
 pandas
 numpy
 matplotlib
-requests
+curl_cffi
