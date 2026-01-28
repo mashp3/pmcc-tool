@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
-import requests
+# import requests は削除しました
 
 # --- フォント設定 ---
 plt.rcParams['font.family'] = 'IPAGothic'
@@ -13,19 +13,13 @@ plt.rcParams['font.family'] = 'IPAGothic'
 st.set_page_config(page_title="PMCC Analyzer", layout="wide")
 
 # ==========================================
-# 0. 接続設定
+# 0. データ取得関数 (シンプル化 & 最適化)
 # ==========================================
-def get_custom_session():
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    })
-    return session
-
 @st.cache_data(ttl=600)
 def fetch_ticker_info(ticker):
     try:
-        tk = yf.Ticker(ticker, session=get_custom_session())
+        # カスタムセッションを削除し、yfinanceに全権委任
+        tk = yf.Ticker(ticker)
         hist = tk.history(period='1d')
         if hist.empty: return None, None, "データなし"
         price = hist['Close'].iloc[-1]
@@ -37,7 +31,7 @@ def fetch_ticker_info(ticker):
 @st.cache_data(ttl=600)
 def fetch_option_chain_data(ticker, date):
     try:
-        tk = yf.Ticker(ticker, session=get_custom_session())
+        tk = yf.Ticker(ticker)
         chain = tk.option_chain(date).calls
         return chain, None
     except Exception as e: return None, str(e)
@@ -62,7 +56,7 @@ st.markdown("""
         .stTable { font-size: 14px; }
     </style>
     <div class="fixed-header">
-        <span class="header-text">🇯🇵 PMCC 分析ツール (Ver 6.1)</span>
+        <span class="header-text">🇯🇵 PMCC 分析ツール (Ver 7.0)</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -139,9 +133,8 @@ with st.sidebar:
             else: st.warning("空です")
 
 # ==========================================
-# 3. メイン処理 (条件分岐)
+# 3. メイン処理
 # ==========================================
-# 変数初期化
 price = 0.0
 long_strike = 0.0
 short_strike = 0.0
@@ -151,18 +144,13 @@ is_ready = False
 ticker_name = "MANUAL"
 
 if st.session_state['manual_mode']:
-    # ==========================================
-    # A. 手動入力モード
-    # ==========================================
+    # --- A. 手動入力モード ---
     st.info("📝 **手動入力モード** (保存可能)")
-    
     col_m1, col_m2 = st.columns(2)
     with col_m1:
         ticker_name = st.text_input("銘柄名", value="NVDA", key="m_ticker").upper()
         price = st.number_input("現在株価 ($)", value=100.0, step=0.1, format="%.2f", key="m_price")
-    
     st.divider()
-    
     c_l, c_s = st.columns(2)
     with c_l:
         st.subheader("Long (LEAPS)")
@@ -177,9 +165,7 @@ if st.session_state['manual_mode']:
         is_ready = True
 
 else:
-    # ==========================================
-    # B. 自動取得モード
-    # ==========================================
+    # --- B. 自動取得モード ---
     default_ticker = "NVDA"
     if st.session_state['load_trigger']:
         default_ticker = st.session_state['load_trigger']['ticker']
@@ -192,6 +178,7 @@ else:
 
     if fetch_pressed or st.session_state['load_trigger']:
         with st.spinner("データ取得中..."):
+            # シンプルな呼び出しに変更
             p_val, exps, err = fetch_ticker_info(ticker_input)
             if err:
                 st.error(f"Error: {err}")
@@ -213,7 +200,6 @@ else:
         c1, c2 = st.columns(2)
         l_idx = len(data['exps']) - 1
         s_idx = 1 if len(data['exps']) > 1 else 0
-
         if loaded:
             if loaded['long_exp'] in data['exps']: l_idx = data['exps'].index(loaded['long_exp'])
             if loaded['short_exp'] in data['exps']: s_idx = data['exps'].index(loaded['short_exp'])
@@ -230,7 +216,6 @@ else:
             with st.spinner("チェーン取得中..."):
                 l_chain, err1 = fetch_option_chain_data(data['ticker'], long_exp)
                 s_chain, err2 = fetch_option_chain_data(data['ticker'], short_exp)
-                
                 if err1 or err2:
                     st.error("取得エラー")
                 else:
@@ -276,10 +261,10 @@ else:
                 is_ready = True
 
 # ==========================================
-# 4. 分析レポート & 内訳テーブル
+# 4. 分析レポート
 # ==========================================
 if is_ready:
-    # 【重要】手動モードの場合、画面の数値を強制的に適用する
+    # 手動モード値の強制同期
     if st.session_state['manual_mode']:
         ticker_name = st.session_state.m_ticker
         price = st.session_state.m_price
@@ -295,14 +280,13 @@ if is_ready:
         
         st.markdown(f"### 📊 分析レポート ({ticker_name})")
         
-        # --- 内訳テーブル ---
+        # 内訳テーブル
         st.markdown("##### 📋 シナリオ別 損益内訳")
         scenarios = [
             {"name": f"現在値 (${price:.2f})", "p": price},
             {"name": f"損益分岐 (${breakeven:.2f})", "p": breakeven},
             {"name": f"Short行使 (${short_strike:.2f})", "p": short_strike},
         ]
-        
         table_data = []
         for sc in scenarios:
             p = sc["p"]
@@ -310,7 +294,6 @@ if is_ready:
             val_s = max(0, p - short_strike)
             cost = -net_debit
             total = val_l - val_s + cost
-            
             table_data.append({
                 "シナリオ": sc["name"],
                 "LEAPS価値 (+)": f"${val_l:.2f}",
@@ -318,15 +301,12 @@ if is_ready:
                 "初期コスト (-)": f"-${net_debit:.2f}",
                 "合計損益": f"${total:.2f}"
             })
-            
         st.table(pd.DataFrame(table_data))
-        # -------------------
 
         m1, m2, m3 = st.columns(3)
         m1.metric("実質コスト", f"${net_debit:.2f}")
         m2.metric("初期投資", f"${total_cost:.0f}")
         m3.metric("分岐点", f"${breakeven:.2f}")
-        
         st.caption(f"Long: ${long_strike} (支払 ${prem_l:.2f}) / Short: ${short_strike} (受取 ${prem_s:.2f})")
 
         # グラフ
