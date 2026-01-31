@@ -5,6 +5,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from urllib.parse import quote
+import gspread
+from google.oauth2.service_account import Credentials
+import json
+import os
 
 # --- フォント設定 ---
 plt.rcParams['font.family'] = 'IPAGothic'
@@ -13,7 +17,37 @@ plt.rcParams['font.family'] = 'IPAGothic'
 st.set_page_config(page_title="PMCC Analyzer", layout="wide")
 
 # ==========================================
-# 0. データ取得関数
+# 0. Google Sheets 連携設定
+# ==========================================
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+def get_sheet_connection():
+    """Renderの環境変数から鍵を読み込みシートに接続"""
+    try:
+        # Renderの環境変数 'GCP_KEY_JSON' からJSON文字列を取得
+        json_str = os.environ.get("GCP_KEY_JSON")
+        if not json_str:
+            return None, "環境変数 GCP_KEY_JSON が設定されていません"
+        
+        key_dict = json.loads(json_str)
+        creds = Credentials.from_service_account_info(key_dict, scopes=SCOPES)
+        client = gspread.authorize(creds)
+        
+        # 環境変数 'SHEET_URL' からシートを開く
+        sheet_url = os.environ.get("SHEET_URL")
+        if not sheet_url:
+            return None, "環境変数 SHEET_URL が設定されていません"
+            
+        sheet = client.open_by_url(sheet_url).sheet1
+        return sheet, None
+    except Exception as e:
+        return None, str(e)
+
+# ==========================================
+# 1. データ取得関数
 # ==========================================
 @st.cache_data(ttl=600)
 def fetch_ticker_info(ticker):
@@ -35,40 +69,28 @@ def fetch_option_chain_data(ticker, date):
         return chain, None
     except Exception as e: return None, str(e)
 
-# ==========================================
-# 1. 共通関数 (カレンダーURL生成)
-# ==========================================
 def create_gcal_url(title, date_obj, description=""):
-    """Googleカレンダー登録用のURLを生成する"""
     if not date_obj: return "#"
-    
-    # 日付フォーマット YYYYMMDD
     start_str = date_obj.strftime('%Y%m%d')
     end_date = date_obj + timedelta(days=1)
     end_str = end_date.strftime('%Y%m%d')
-    
     base_url = "https://www.google.com/calendar/render?action=TEMPLATE"
     params = f"&text={quote(title)}&dates={start_str}/{end_str}&details={quote(description)}"
     return base_url + params
 
 # ==========================================
-# 2. デザイン修正
+# 2. デザイン & 状態管理
 # ==========================================
 st.markdown("""
     <style>
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
+        #MainMenu {visibility: hidden;} footer {visibility: hidden;}
         .fixed-header {
             position: fixed; top: 0; left: 60px; width: calc(100% - 60px); height: 45px;
             background-color: #0E1117; border-bottom: 1px solid #333; z-index: 999999;
             display: flex; align-items: center; padding-left: 10px;
         }
-        .header-text {
-            color: #00e676; font-size: 16px; font-weight: bold; margin: 0;
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-        }
+        .header-text { color: #00e676; font-size: 16px; font-weight: bold; margin: 0; }
         .block-container { padding-top: 60px !important; }
-        .stTable { font-size: 14px; }
         .gcal-btn {
             text-decoration: none; display: inline-block; padding: 5px 10px;
             background-color: #333; color: white !important; border-radius: 4px;
@@ -76,92 +98,123 @@ st.markdown("""
         }
         .gcal-btn:hover { background-color: #444; border-color: #00e676; }
     </style>
-    <div class="fixed-header">
-        <span class="header-text">🇯🇵 PMCC 分析ツール (Ver 7.2)</span>
-    </div>
+    <div class="fixed-header"><span class="header-text">🇯🇵 PMCC 分析ツール (Ver 8.0 Cloud)</span></div>
     """, unsafe_allow_html=True)
 
-# ==========================================
-# 3. ポートフォリオ & 手動モード切替
-# ==========================================
-if 'portfolios' not in st.session_state:
-    st.session_state['portfolios'] = {f"Slot {i+1}": None for i in range(5)}
 for key in ['ticker_data', 'strikes_data', 'load_trigger']:
     if key not in st.session_state: st.session_state[key] = None
+if 'manual_mode' not in st.session_state: st.session_state['manual_mode'] = False
 
-if 'manual_mode' not in st.session_state:
-    st.session_state['manual_mode'] = False
-
+# ==========================================
+# 3. サイドバー (クラウド保存機能)
+# ==========================================
 with st.sidebar:
     st.header("⚙️ 設定")
-    st.session_state['manual_mode'] = st.toggle("手動入力モード (APIエラー時用)", value=st.session_state['manual_mode'])
-    
+    st.session_state['manual_mode'] = st.toggle("手動入力モード", value=st.session_state['manual_mode'])
     st.divider()
-    st.header("📂 ポートフォリオ")
-    selected_slot = st.selectbox("保存スロット", [f"Slot {i+1}" for i in range(5)])
     
-    saved = st.session_state['portfolios'][selected_slot]
-    if saved:
-        st.caption(f"保存済: {saved.get('ticker', 'Manual')} ({saved.get('save_date','')})")
-    
+    st.header("☁️ クラウド保存 (Google)")
+    # スロット選択 (Row 2~6に対応)
+    slot_idx = st.selectbox("スロット選択", range(1, 6), format_func=lambda x: f"Slot {x}")
+    row_num = slot_idx + 1 # ヘッダーが1行目なので+1
+
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("保存", use_container_width=True):
-            save_timestamp = datetime.now().strftime('%m/%d %H:%M')
-            if st.session_state['manual_mode']:
-                if 'm_ticker' in st.session_state:
-                    # 手動データの保存
-                    st.session_state['portfolios'][selected_slot] = {
-                        'type': 'manual',
-                        'ticker': st.session_state.m_ticker,
-                        'price': st.session_state.m_price,
-                        'long_strike': st.session_state.m_l_strike,
-                        'prem_l': st.session_state.m_l_prem,
-                        'short_strike': st.session_state.m_s_strike,
-                        'prem_s': st.session_state.m_s_prem,
-                        'exp_l_date': st.session_state.get('m_l_exp'),
-                        'exp_s_date': st.session_state.get('m_s_exp'),
-                        'save_date': save_timestamp
-                    }
-                    st.success("手動データを保存!")
-                    st.rerun()
-                else: st.error("保存するデータがありません")
-            elif st.session_state.get('ticker_data'):
-                # 自動データの保存
-                st.session_state['portfolios'][selected_slot] = {
-                    'type': 'auto',
-                    'ticker': st.session_state['ticker_data']['ticker'],
-                    'long_exp': st.session_state['strikes_data']['long_exp'],
-                    'short_exp': st.session_state['strikes_data']['short_exp'],
-                    'save_date': save_timestamp
-                }
-                st.success("自動データを保存!")
-                st.rerun()
-            else: st.error("データなし")
+        if st.button("クラウド保存", use_container_width=True):
+            with st.spinner("Googleに送信中..."):
+                sheet, err = get_sheet_connection()
+                if err:
+                    st.error(f"接続エラー: {err}")
+                else:
+                    # 保存データ構築
+                    ts = datetime.now().strftime('%Y/%m/%d %H:%M')
+                    save_list = [""] * 10 # 10列分確保
+                    
+                    if st.session_state['manual_mode'] and 'm_ticker' in st.session_state:
+                        # Manual Data
+                        save_list = [
+                            f"Slot {slot_idx}", ts, "manual",
+                            st.session_state.m_ticker, st.session_state.m_price,
+                            st.session_state.m_l_strike, st.session_state.m_l_prem,
+                            st.session_state.m_s_strike, st.session_state.m_s_prem,
+                            str(st.session_state.get('m_l_exp', '')),
+                            str(st.session_state.get('m_s_exp', ''))
+                        ]
+                    elif st.session_state.get('ticker_data'):
+                        # Auto Data
+                        save_list = [
+                            f"Slot {slot_idx}", ts, "auto",
+                            st.session_state['ticker_data']['ticker'],
+                            st.session_state['ticker_data']['price'],
+                            st.session_state.get('long_strike_val', 0), # 下で変数格納必要
+                            st.session_state.get('prem_l_val', 0),
+                            st.session_state.get('short_strike_val', 0),
+                            st.session_state.get('prem_s_val', 0),
+                            st.session_state['strikes_data']['long_exp'],
+                            st.session_state['strikes_data']['short_exp']
+                        ]
+                    
+                    if save_list[0]:
+                        try:
+                            # 行を更新 (A列〜K列)
+                            sheet.update(range_name=f"A{row_num}:K{row_num}", values=[save_list])
+                            st.success(f"Slot {slot_idx} に保存完了!")
+                        except Exception as e:
+                            st.error(f"書込エラー: {e}")
+                    else:
+                        st.warning("保存するデータがありません")
 
     with c2:
-        if st.button("読込", use_container_width=True):
-            if saved:
-                if saved.get('type') == 'manual':
-                    st.session_state['manual_mode'] = True
-                    st.session_state['m_ticker'] = saved['ticker']
-                    st.session_state['m_price'] = saved['price']
-                    st.session_state['m_l_strike'] = saved['long_strike']
-                    st.session_state['m_l_prem'] = saved['prem_l']
-                    st.session_state['m_s_strike'] = saved['short_strike']
-                    st.session_state['m_s_prem'] = saved['prem_s']
-                    if saved.get('exp_l_date'): st.session_state['m_l_exp'] = saved['exp_l_date']
-                    if saved.get('exp_s_date'): st.session_state['m_s_exp'] = saved['exp_s_date']
-                    st.rerun()
+        if st.button("クラウド読込", use_container_width=True):
+            with st.spinner("Googleから受信中..."):
+                sheet, err = get_sheet_connection()
+                if err:
+                    st.error(f"接続エラー: {err}")
                 else:
-                    st.session_state['load_trigger'] = saved
-                    st.session_state['manual_mode'] = False
-                    st.rerun()
-            else: st.warning("空です")
+                    try:
+                        vals = sheet.row_values(row_num)
+                        if not vals or len(vals) < 4:
+                            st.warning("データが空です")
+                        else:
+                            # データ展開
+                            # [0]Slot, [1]Date, [2]Type, [3]Ticker, [4]Price, [5]L_Str, [6]L_Prem, [7]S_Str, [8]S_Prem, [9]L_Exp, [10]S_Exp
+                            d_type = vals[2]
+                            ticker = vals[3]
+                            price = float(vals[4])
+                            
+                            # 手動モードへ復元
+                            if d_type == 'manual':
+                                st.session_state['manual_mode'] = True
+                                st.session_state['m_ticker'] = ticker
+                                st.session_state['m_price'] = price
+                                st.session_state['m_l_strike'] = float(vals[5])
+                                st.session_state['m_l_prem'] = float(vals[6])
+                                st.session_state['m_s_strike'] = float(vals[7])
+                                st.session_state['m_s_prem'] = float(vals[8])
+                                try: st.session_state['m_l_exp'] = datetime.strptime(vals[9], '%Y-%m-%d').date()
+                                except: pass
+                                try: st.session_state['m_s_exp'] = datetime.strptime(vals[10], '%Y-%m-%d').date()
+                                except: pass
+                                st.rerun()
+                            
+                            # 自動モードへ復元
+                            else:
+                                st.session_state['manual_mode'] = False
+                                # 簡易復元: ticker_dataなどを再構築
+                                st.session_state['load_trigger'] = {
+                                    'ticker': ticker,
+                                    'long_exp': vals[9],
+                                    'short_exp': vals[10]
+                                }
+                                st.rerun()
+                                
+                    except Exception as e:
+                        st.error(f"読込エラー: {e}")
 
 # ==========================================
 # 4. メイン処理
 # ==========================================
+# 変数初期化
 price = 0.0
 long_strike = 0.0
 short_strike = 0.0
@@ -174,7 +227,7 @@ ticker_name = "MANUAL"
 
 if st.session_state['manual_mode']:
     # --- A. 手動入力モード ---
-    st.info("📝 **手動入力モード** (日付設定追加)")
+    st.info("📝 **手動入力モード**")
     col_m1, col_m2 = st.columns(2)
     with col_m1:
         ticker_name = st.text_input("銘柄名", value="NVDA", key="m_ticker").upper()
@@ -243,16 +296,13 @@ else:
         except: pass
 
         auto_load = False
-        if loaded:
-            auto_load = True
-            st.session_state['load_trigger'] = None
+        if loaded: auto_load = True; st.session_state['load_trigger'] = None
 
         if st.button("ストライク読込", use_container_width=True) or auto_load:
             with st.spinner("チェーン取得中..."):
                 l_chain, err1 = fetch_option_chain_data(data['ticker'], long_exp)
                 s_chain, err2 = fetch_option_chain_data(data['ticker'], short_exp)
-                if err1 or err2:
-                    st.error("取得エラー")
+                if err1 or err2: st.error("取得エラー")
                 else:
                     strikes_l = sorted(l_chain['strike'].unique())
                     strikes_s = sorted(s_chain['strike'].unique())
@@ -294,9 +344,15 @@ else:
                 prem_l = get_valid_price(l_row, 'ask')
                 prem_s = get_valid_price(s_row, 'bid')
                 is_ready = True
+                
+            # 保存用の一時変数退避 (自動モード用)
+            st.session_state['long_strike_val'] = long_strike
+            st.session_state['short_strike_val'] = short_strike
+            st.session_state['prem_l_val'] = prem_l
+            st.session_state['prem_s_val'] = prem_s
 
 # ==========================================
-# 5. 分析レポート & カレンダー機能
+# 5. 分析レポート
 # ==========================================
 if is_ready:
     if st.session_state['manual_mode']:
@@ -315,8 +371,6 @@ if is_ready:
         breakeven = long_strike + net_debit
         
         st.markdown(f"### 📊 分析レポート ({ticker_name})")
-        
-        # 内訳テーブル
         st.markdown("##### 📋 シナリオ別 損益内訳")
         scenarios = [
             {"name": f"現在値 (${price:.2f})", "p": price},
@@ -345,7 +399,6 @@ if is_ready:
         m3.metric("分岐点", f"${breakeven:.2f}")
         st.caption(f"Long: ${long_strike} (支払 ${prem_l:.2f}) / Short: ${short_strike} (受取 ${prem_s:.2f})")
 
-        # グラフ
         fig, ax = plt.subplots(figsize=(10, 4))
         prices = np.linspace(price * 0.7, price * 1.3, 100)
         val_l_arr = np.maximum(0, prices - long_strike)
@@ -362,33 +415,23 @@ if is_ready:
         ax.legend(['P&L', 'Zero Line', 'Current', 'Breakeven'])
         st.pyplot(fig)
 
-        # --- カレンダー登録機能 ---
         if exp_l_obj and exp_s_obj:
             st.divider()
             st.markdown("##### 📅 スケジュール管理 (Googleカレンダー)")
-            
-            # 日付計算
-            roll_date = exp_l_obj - timedelta(days=20) # 20日前
-            settle_date = exp_s_obj - timedelta(days=10) # 10日前
-            
-            # リンク生成
+            roll_date = exp_l_obj - timedelta(days=20)
+            settle_date = exp_s_obj - timedelta(days=10)
             desc_common = f"銘柄: {ticker_name}\nLong: ${long_strike}\nShort: ${short_strike}"
             
             url_s_exp = create_gcal_url(f"【PMCC】Short満期 ({ticker_name})", exp_s_obj, desc_common)
             url_l_exp = create_gcal_url(f"【PMCC】LEAPS満期 ({ticker_name})", exp_l_obj, desc_common)
-            url_roll = create_gcal_url(f"【PMCC】LEAPSローリング検討 ({ticker_name})", roll_date, f"{desc_common}\n満期20日前")
+            url_roll = create_gcal_url(f"【PMCC】LEAPSロール ({ticker_name})", roll_date, f"{desc_common}\n満期20日前")
             url_settle = create_gcal_url(f"【PMCC】Short決済 ({ticker_name})", settle_date, f"{desc_common}\n満期10日前")
 
-            # 表示
             gc1, gc2, gc3, gc4 = st.columns(4)
-            with gc1:
-                st.markdown(f"**Short満期**<br>{exp_s_obj}<br><a href='{url_s_exp}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
-            with gc2:
-                st.markdown(f"**Short決済目安** (10日前)<br>{settle_date}<br><a href='{url_settle}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
-            with gc3:
-                st.markdown(f"**LEAPS満期**<br>{exp_l_obj}<br><a href='{url_l_exp}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
-            with gc4:
-                st.markdown(f"**LEAPSロール目安** (20日前)<br>{roll_date}<br><a href='{url_roll}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
+            with gc1: st.markdown(f"**Short満期**<br>{exp_s_obj}<br><a href='{url_s_exp}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
+            with gc2: st.markdown(f"**Short決済目安**<br>{settle_date}<br><a href='{url_settle}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
+            with gc3: st.markdown(f"**LEAPS満期**<br>{exp_l_obj}<br><a href='{url_l_exp}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
+            with gc4: st.markdown(f"**LEAPSロール目安**<br>{roll_date}<br><a href='{url_roll}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
 
     except Exception as e:
         st.error(f"計算エラー: {e}")
