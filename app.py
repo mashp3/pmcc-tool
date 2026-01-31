@@ -377,7 +377,7 @@ if is_ready:
             url_s_exp = create_gcal_url(f"【PMCC】Short満期 ({ticker_name})", exp_s_obj, desc_common)
             url_l_exp = create_gcal_url(f"【PMCC】LEAPS満期 ({ticker_name})", exp_l_obj, desc_common)
             url_roll = create_gcal_url(f"【PMCC】LEAPSローリング検討 ({ticker_name})", roll_date, f"{desc_common}\n満期20日前")
-            url_settle = create_gcal_url(f"【PMCC】Short決済/ロール ({ticker_name})", settle_date, f"{desc_common}\n満期10日前")
+            url_settle = create_gcal_url(f"【PMCC】Short決済 ({ticker_name})", settle_date, f"{desc_common}\n満期10日前")
 
             # 表示
             gc1, gc2, gc3, gc4 = st.columns(4)
