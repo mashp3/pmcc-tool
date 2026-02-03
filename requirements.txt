@@ -6,3 +6,4 @@ matplotlib
 curl_cffi
 gspread
 google-auth
+scipy
