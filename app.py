@@ -9,6 +9,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import json
 import os
+from scipy.stats import norm # 数学計算用
 
 # --- フォント設定 ---
 plt.rcParams['font.family'] = 'IPAGothic'
@@ -17,37 +18,51 @@ plt.rcParams['font.family'] = 'IPAGothic'
 st.set_page_config(page_title="PMCC Analyzer", layout="wide")
 
 # ==========================================
-# 0. Google Sheets 連携設定
+# 0. Google Sheets & 共通設定
 # ==========================================
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
 def get_sheet_connection():
-    """Renderの環境変数から鍵を読み込みシートに接続"""
     try:
-        # Renderの環境変数 'GCP_KEY_JSON' からJSON文字列を取得
         json_str = os.environ.get("GCP_KEY_JSON")
-        if not json_str:
-            return None, "環境変数 GCP_KEY_JSON が設定されていません"
-        
+        if not json_str: return None, "環境変数 GCP_KEY_JSON が未設定"
         key_dict = json.loads(json_str)
         creds = Credentials.from_service_account_info(key_dict, scopes=SCOPES)
         client = gspread.authorize(creds)
-        
-        # 環境変数 'SHEET_URL' からシートを開く
         sheet_url = os.environ.get("SHEET_URL")
-        if not sheet_url:
-            return None, "環境変数 SHEET_URL が設定されていません"
-            
+        if not sheet_url: return None, "環境変数 SHEET_URL が未設定"
         sheet = client.open_by_url(sheet_url).sheet1
         return sheet, None
-    except Exception as e:
-        return None, str(e)
+    except Exception as e: return None, str(e)
 
 # ==========================================
-# 1. データ取得関数
+# 1. 計算ロジック (ブラック・ショールズ)
+# ==========================================
+def calculate_greeks(S, K, T, r, sigma, option_type='call'):
+    """
+    S: 株価, K: 権利行使価格, T: 残存年数, r: 金利, sigma: IV
+    """
+    try:
+        if T <= 0 or sigma <= 0: return None, None
+        
+        d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+        d2 = d1 - sigma * np.sqrt(T)
+        
+        if option_type == 'call':
+            delta = norm.cdf(d1)
+            # Theta calculation (annual -> daily approximation)
+            theta_annual = -(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) - r * K * np.exp(-r * T) * norm.cdf(d2)
+            theta = theta_annual / 365.0
+        else:
+            delta = -norm.cdf(-d1)
+            theta = 0 # Putは今回未使用
+            
+        return delta, theta
+    except:
+        return None, None
+
+# ==========================================
+# 2. データ取得関数
 # ==========================================
 @st.cache_data(ttl=600)
 def fetch_ticker_info(ticker):
@@ -79,7 +94,7 @@ def create_gcal_url(title, date_obj, description=""):
     return base_url + params
 
 # ==========================================
-# 2. デザイン & 状態管理
+# 3. デザイン & 状態管理
 # ==========================================
 st.markdown("""
     <style>
@@ -97,124 +112,83 @@ st.markdown("""
             border: 1px solid #555; font-size: 0.8rem; margin-right: 5px;
         }
         .gcal-btn:hover { background-color: #444; border-color: #00e676; }
+        /* グリークス表示用 */
+        .greek-box {
+            background-color: #1E1E1E; padding: 10px; border-radius: 5px;
+            border-left: 3px solid #00e676; margin-bottom: 10px;
+        }
+        .greek-val { font-weight: bold; color: #fff; }
+        .greek-label { font-size: 0.8rem; color: #aaa; }
     </style>
-    <div class="fixed-header"><span class="header-text">🇯🇵 PMCC 分析ツール (Ver 8.0 Cloud)</span></div>
+    <div class="fixed-header"><span class="header-text">🇯🇵 PMCC 分析ツール (Ver 9.0 Greeks)</span></div>
     """, unsafe_allow_html=True)
 
 for key in ['ticker_data', 'strikes_data', 'load_trigger']:
     if key not in st.session_state: st.session_state[key] = None
 if 'manual_mode' not in st.session_state: st.session_state['manual_mode'] = False
+if 'ticker_input_val' not in st.session_state: st.session_state['ticker_input_val'] = "NVDA"
 
 # ==========================================
-# 3. サイドバー (クラウド保存機能)
+# 4. サイドバー (クラウド保存)
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 設定")
     st.session_state['manual_mode'] = st.toggle("手動入力モード", value=st.session_state['manual_mode'])
     st.divider()
-    
-    st.header("☁️ クラウド保存 (Google)")
-    # スロット選択 (Row 2~6に対応)
+    st.header("☁️ クラウド保存")
     slot_idx = st.selectbox("スロット選択", range(1, 6), format_func=lambda x: f"Slot {x}")
-    row_num = slot_idx + 1 # ヘッダーが1行目なので+1
+    row_num = slot_idx + 1
 
     c1, c2 = st.columns(2)
     with c1:
         if st.button("クラウド保存", use_container_width=True):
-            with st.spinner("Googleに送信中..."):
+            with st.spinner("送信中..."):
                 sheet, err = get_sheet_connection()
-                if err:
-                    st.error(f"接続エラー: {err}")
+                if err: st.error(f"Error: {err}")
                 else:
-                    # 保存データ構築
                     ts = datetime.now().strftime('%Y/%m/%d %H:%M')
-                    save_list = [""] * 10 # 10列分確保
-                    
+                    save_list = [""] * 11
                     if st.session_state['manual_mode'] and 'm_ticker' in st.session_state:
-                        # Manual Data
-                        save_list = [
-                            f"Slot {slot_idx}", ts, "manual",
-                            st.session_state.m_ticker, st.session_state.m_price,
-                            st.session_state.m_l_strike, st.session_state.m_l_prem,
-                            st.session_state.m_s_strike, st.session_state.m_s_prem,
-                            str(st.session_state.get('m_l_exp', '')),
-                            str(st.session_state.get('m_s_exp', ''))
-                        ]
+                        save_list = [f"Slot {slot_idx}", ts, "manual", st.session_state.m_ticker, st.session_state.m_price, st.session_state.m_l_strike, st.session_state.m_l_prem, st.session_state.m_s_strike, st.session_state.m_s_prem, str(st.session_state.get('m_l_exp', '')), str(st.session_state.get('m_s_exp', ''))]
                     elif st.session_state.get('ticker_data'):
-                        # Auto Data
-                        save_list = [
-                            f"Slot {slot_idx}", ts, "auto",
-                            st.session_state['ticker_data']['ticker'],
-                            st.session_state['ticker_data']['price'],
-                            st.session_state.get('long_strike_val', 0), # 下で変数格納必要
-                            st.session_state.get('prem_l_val', 0),
-                            st.session_state.get('short_strike_val', 0),
-                            st.session_state.get('prem_s_val', 0),
-                            st.session_state['strikes_data']['long_exp'],
-                            st.session_state['strikes_data']['short_exp']
-                        ]
-                    
+                        save_list = [f"Slot {slot_idx}", ts, "auto", st.session_state['ticker_data']['ticker'], st.session_state['ticker_data']['price'], st.session_state.get('long_strike_val', 0), st.session_state.get('prem_l_val', 0), st.session_state.get('short_strike_val', 0), st.session_state.get('prem_s_val', 0), st.session_state['strikes_data']['long_exp'], st.session_state['strikes_data']['short_exp']]
                     if save_list[0]:
                         try:
-                            # 行を更新 (A列〜K列)
                             sheet.update(range_name=f"A{row_num}:K{row_num}", values=[save_list])
-                            st.success(f"Slot {slot_idx} に保存完了!")
-                        except Exception as e:
-                            st.error(f"書込エラー: {e}")
-                    else:
-                        st.warning("保存するデータがありません")
-
+                            st.success("保存完了!")
+                        except Exception as e: st.error(f"Error: {e}")
+                    else: st.warning("データなし")
     with c2:
         if st.button("クラウド読込", use_container_width=True):
-            with st.spinner("Googleから受信中..."):
+            with st.spinner("受信中..."):
                 sheet, err = get_sheet_connection()
-                if err:
-                    st.error(f"接続エラー: {err}")
+                if err: st.error(f"Error: {err}")
                 else:
                     try:
                         vals = sheet.row_values(row_num)
-                        if not vals or len(vals) < 4:
-                            st.warning("データが空です")
+                        if not vals or len(vals) < 4: st.warning("データ空")
                         else:
-                            # データ展開
-                            # [0]Slot, [1]Date, [2]Type, [3]Ticker, [4]Price, [5]L_Str, [6]L_Prem, [7]S_Str, [8]S_Prem, [9]L_Exp, [10]S_Exp
-                            d_type = vals[2]
-                            ticker = vals[3]
-                            price = float(vals[4])
-                            
-                            # 手動モードへ復元
+                            d_type, ticker, price = vals[2], vals[3], float(vals[4])
                             if d_type == 'manual':
                                 st.session_state['manual_mode'] = True
-                                st.session_state['m_ticker'] = ticker
-                                st.session_state['m_price'] = price
-                                st.session_state['m_l_strike'] = float(vals[5])
-                                st.session_state['m_l_prem'] = float(vals[6])
-                                st.session_state['m_s_strike'] = float(vals[7])
-                                st.session_state['m_s_prem'] = float(vals[8])
+                                st.session_state['m_ticker'] = ticker; st.session_state['m_price'] = price
+                                st.session_state['m_l_strike'] = float(vals[5]); st.session_state['m_l_prem'] = float(vals[6])
+                                st.session_state['m_s_strike'] = float(vals[7]); st.session_state['m_s_prem'] = float(vals[8])
                                 try: st.session_state['m_l_exp'] = datetime.strptime(vals[9], '%Y-%m-%d').date()
                                 except: pass
                                 try: st.session_state['m_s_exp'] = datetime.strptime(vals[10], '%Y-%m-%d').date()
                                 except: pass
                                 st.rerun()
-                            
-                            # 自動モードへ復元
                             else:
                                 st.session_state['manual_mode'] = False
-                                # 簡易復元: ticker_dataなどを再構築
-                                st.session_state['load_trigger'] = {
-                                    'ticker': ticker,
-                                    'long_exp': vals[9],
-                                    'short_exp': vals[10]
-                                }
+                                st.session_state['ticker_input_val'] = ticker
+                                st.session_state['load_trigger'] = {'ticker': ticker, 'long_exp': vals[9], 'short_exp': vals[10], 'long_strike': float(vals[5]), 'short_strike': float(vals[7])}
                                 st.rerun()
-                                
-                    except Exception as e:
-                        st.error(f"読込エラー: {e}")
+                    except Exception as e: st.error(f"Error: {e}")
 
 # ==========================================
-# 4. メイン処理
+# 5. メイン処理
 # ==========================================
-# 変数初期化
 price = 0.0
 long_strike = 0.0
 short_strike = 0.0
@@ -224,48 +198,42 @@ exp_l_obj = None
 exp_s_obj = None
 is_ready = False
 ticker_name = "MANUAL"
+# Greeks用変数
+delta_l, theta_l = None, None
+delta_s, theta_s = None, None
 
 if st.session_state['manual_mode']:
-    # --- A. 手動入力モード ---
-    st.info("📝 **手動入力モード**")
+    # --- A. 手動モード ---
+    st.info("📝 **手動モード** (Greeks計算不可)")
     col_m1, col_m2 = st.columns(2)
     with col_m1:
-        ticker_name = st.text_input("銘柄名", value="NVDA", key="m_ticker").upper()
-        price = st.number_input("現在株価 ($)", value=100.0, step=0.1, format="%.2f", key="m_price")
+        ticker_name = st.text_input("銘柄", value="NVDA", key="m_ticker").upper()
+        price = st.number_input("株価 ($)", value=100.0, step=0.1, key="m_price")
     st.divider()
     c_l, c_s = st.columns(2)
     with c_l:
         st.subheader("Long (LEAPS)")
-        exp_l_obj = st.date_input("Long満期日", value=datetime.today()+timedelta(days=365), key="m_l_exp")
-        long_strike = st.number_input("権利行使価格 (Long)", value=80.0, step=1.0, key="m_l_strike")
-        prem_l = st.number_input("支払プレミアム (Ask)", value=25.0, step=0.1, key="m_l_prem")
+        exp_l_obj = st.date_input("Long満期", value=datetime.today()+timedelta(days=365), key="m_l_exp")
+        long_strike = st.number_input("行使価格 (L)", value=80.0, step=1.0, key="m_l_strike")
+        prem_l = st.number_input("支払 (Ask)", value=25.0, step=0.1, key="m_l_prem")
     with c_s:
         st.subheader("Short (Call)")
-        exp_s_obj = st.date_input("Short満期日", value=datetime.today()+timedelta(days=30), key="m_s_exp")
-        short_strike = st.number_input("権利行使価格 (Short)", value=130.0, step=1.0, key="m_s_strike")
-        prem_s = st.number_input("受取プレミアム (Bid)", value=5.0, step=0.1, key="m_s_prem")
-    
-    if st.button("この条件で分析する", type="primary"):
-        is_ready = True
+        exp_s_obj = st.date_input("Short満期", value=datetime.today()+timedelta(days=30), key="m_s_exp")
+        short_strike = st.number_input("行使価格 (S)", value=130.0, step=1.0, key="m_s_strike")
+        prem_s = st.number_input("受取 (Bid)", value=5.0, step=0.1, key="m_s_prem")
+    if st.button("分析実行", type="primary"): is_ready = True
 
 else:
-    # --- B. 自動取得モード ---
-    default_ticker = "NVDA"
-    if st.session_state['load_trigger']:
-        default_ticker = st.session_state['load_trigger']['ticker']
-
+    # --- B. 自動モード ---
     col1, col2 = st.columns([3, 1])
-    with col1:
-        ticker_input = st.text_input("銘柄", value=default_ticker, label_visibility="collapsed", placeholder="銘柄コード").upper()
-    with col2:
-        fetch_pressed = st.button("データ取得", type="primary", use_container_width=True)
+    with col1: ticker_input = st.text_input("銘柄", key="ticker_input_val", placeholder="NVDA").upper()
+    with col2: fetch_pressed = st.button("データ取得", type="primary", use_container_width=True)
 
     if fetch_pressed or st.session_state['load_trigger']:
-        with st.spinner("データ取得中..."):
+        with st.spinner("取得中..."):
             p_val, exps, err = fetch_ticker_info(ticker_input)
             if err:
-                st.error(f"Error: {err}")
-                st.warning("👉 サイドバーから「手動入力モード」をONにしてください。")
+                st.error(f"Error: {err}"); st.warning("👉 手動モード推奨")
                 st.session_state['load_trigger'] = None
             else:
                 st.session_state['ticker_data'] = {'price': p_val, 'exps': exps, 'ticker': ticker_input}
@@ -277,7 +245,6 @@ else:
         loaded = st.session_state.get('load_trigger')
         price = data['price']
         ticker_name = data['ticker']
-        
         st.markdown(f"**現在株価: ${price:.2f}**")
         
         c1, c2 = st.columns(2)
@@ -296,7 +263,10 @@ else:
         except: pass
 
         auto_load = False
-        if loaded: auto_load = True; st.session_state['load_trigger'] = None
+        if loaded: auto_load = True
+
+        # ストライク取得 (IVも含めて保持するためにchain全体を保存する必要あり)
+        if 'chain_cache' not in st.session_state: st.session_state['chain_cache'] = {}
 
         if st.button("ストライク読込", use_container_width=True) or auto_load:
             with st.spinner("チェーン取得中..."):
@@ -304,19 +274,24 @@ else:
                 s_chain, err2 = fetch_option_chain_data(data['ticker'], short_exp)
                 if err1 or err2: st.error("取得エラー")
                 else:
+                    # IVデータの保持
+                    st.session_state['chain_cache']['l'] = l_chain
+                    st.session_state['chain_cache']['s'] = s_chain
+                    
                     strikes_l = sorted(l_chain['strike'].unique())
                     strikes_s = sorted(s_chain['strike'].unique())
-                    tgt_l = data['price'] * 0.60
-                    def_l = min(strikes_l, key=lambda x:abs(x-tgt_l))
-                    tgt_s = data['price'] * 1.15
-                    def_s = min(strikes_s, key=lambda x:abs(x-tgt_s))
+                    
+                    if loaded and 'long_strike' in loaded:
+                        def_l = min(strikes_l, key=lambda x:abs(x-loaded['long_strike']))
+                        def_s = min(strikes_s, key=lambda x:abs(x-loaded['short_strike']))
+                    else:
+                        def_l = min(strikes_l, key=lambda x:abs(x-(data['price']*0.60)))
+                        def_s = min(strikes_s, key=lambda x:abs(x-(data['price']*1.15)))
 
-                    st.session_state['strikes_data'] = {
-                        'long_exp': long_exp, 'short_exp': short_exp,
-                        'strikes_l': strikes_l, 'strikes_s': strikes_s,
-                        'def_l': def_l, 'def_s': def_s
-                    }
+                    st.session_state['strikes_data'] = {'long_exp': long_exp, 'short_exp': short_exp, 'strikes_l': strikes_l, 'strikes_s': strikes_s, 'def_l': def_l, 'def_s': def_s}
         
+        if loaded: st.session_state['load_trigger'] = None
+
         if st.session_state['strikes_data']:
             s_data = st.session_state['strikes_data']
             st.divider()
@@ -331,28 +306,49 @@ else:
                 short_strike = st.selectbox("Short Strike", s_data['strikes_s'], index=d_idx)
             
             if st.button("分析実行", type="primary", use_container_width=True):
-                l_chain, _ = fetch_option_chain_data(ticker_name, s_data['long_exp'])
-                s_chain, _ = fetch_option_chain_data(ticker_name, s_data['short_exp'])
-                l_row = l_chain[l_chain['strike'] == long_strike].iloc[0]
-                s_row = s_chain[s_chain['strike'] == short_strike].iloc[0]
+                # データ再取得せずキャッシュから利用
+                l_chain = st.session_state['chain_cache'].get('l')
+                s_chain = st.session_state['chain_cache'].get('s')
                 
-                def get_valid_price(row, col_name):
-                    val = row.get(col_name, 0)
-                    if pd.isna(val) or val <= 0: return row.get('lastPrice', 0)
-                    return val
+                if l_chain is not None and s_chain is not None:
+                    l_row = l_chain[l_chain['strike'] == long_strike].iloc[0]
+                    s_row = s_chain[s_chain['strike'] == short_strike].iloc[0]
+                    
+                    def get_price(row):
+                        val = row.get('ask', 0) if 'ask' in row else 0 # LongはAsk
+                        if pd.isna(val) or val <= 0: return row.get('lastPrice', 0)
+                        return val
+                    def get_bid(row):
+                        val = row.get('bid', 0) if 'bid' in row else 0 # ShortはBid
+                        if pd.isna(val) or val <= 0: return row.get('lastPrice', 0)
+                        return val
 
-                prem_l = get_valid_price(l_row, 'ask')
-                prem_s = get_valid_price(s_row, 'bid')
-                is_ready = True
-                
-            # 保存用の一時変数退避 (自動モード用)
+                    prem_l = get_price(l_row)
+                    prem_s = get_bid(s_row)
+                    
+                    # --- Greeks計算 ---
+                    # 残存年数 T
+                    today = datetime.today()
+                    T_l = (datetime.strptime(long_exp, '%Y-%m-%d') - today).days / 365.0
+                    T_s = (datetime.strptime(short_exp, '%Y-%m-%d') - today).days / 365.0
+                    # IV取得
+                    iv_l = l_row.get('impliedVolatility', 0)
+                    iv_s = s_row.get('impliedVolatility', 0)
+                    # 金利 (固定4.5%とする)
+                    r = 0.045
+                    
+                    delta_l, theta_l = calculate_greeks(price, long_strike, T_l, r, iv_l, 'call')
+                    delta_s, theta_s = calculate_greeks(price, short_strike, T_s, r, iv_s, 'call')
+                    
+                    is_ready = True
+                    
             st.session_state['long_strike_val'] = long_strike
             st.session_state['short_strike_val'] = short_strike
             st.session_state['prem_l_val'] = prem_l
             st.session_state['prem_s_val'] = prem_s
 
 # ==========================================
-# 5. 分析レポート
+# 6. 分析レポート
 # ==========================================
 if is_ready:
     if st.session_state['manual_mode']:
@@ -371,6 +367,45 @@ if is_ready:
         breakeven = long_strike + net_debit
         
         st.markdown(f"### 📊 分析レポート ({ticker_name})")
+        
+        # --- Greeks表示 & 判定 (自動モードのみ) ---
+        if not st.session_state['manual_mode'] and delta_l is not None:
+            st.markdown("##### 🧬 Greeks & 構成判定")
+            g1, g2 = st.columns(2)
+            
+            # 判定ロジック
+            # Long: Delta >= 0.80
+            is_l_good = delta_l >= 0.80
+            l_color = "#00e676" if is_l_good else "#ffb74d"
+            l_icon = "✅" if is_l_good else "⚠️"
+            
+            # Short: Delta 0.20 ~ 0.40 (画像では0.30推奨)
+            is_s_good = 0.20 <= delta_s <= 0.40
+            s_color = "#00e676" if is_s_good else "#ffb74d"
+            s_icon = "✅" if is_s_good else "⚠️"
+            
+            with g1:
+                st.markdown(f"""
+                <div class="greek-box" style="border-left-color: {l_color};">
+                    <div>Long (LEAPS) {l_icon}</div>
+                    <div class="greek-val">Δ {delta_l:.2f} / Θ {theta_l:.3f}</div>
+                    <div class="greek-label">目標: Δ 0.80以上 (Deep ITM)</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with g2:
+                st.markdown(f"""
+                <div class="greek-box" style="border-left-color: {s_color};">
+                    <div>Short (Call) {s_icon}</div>
+                    <div class="greek-val">Δ {delta_s:.2f} / Θ {theta_s:.3f}</div>
+                    <div class="greek-label">目標: Δ 0.30付近 (OTM)</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            if is_l_good and is_s_good:
+                st.info("💎 **素晴らしい構成です！** 教科書通りの理想的なPMCCセットアップです。")
+        
+        # ----------------------------------------
+
         st.markdown("##### 📋 シナリオ別 損益内訳")
         scenarios = [
             {"name": f"現在値 (${price:.2f})", "p": price},
@@ -417,7 +452,7 @@ if is_ready:
 
         if exp_l_obj and exp_s_obj:
             st.divider()
-            st.markdown("##### 📅 スケジュール管理 (Googleカレンダー)")
+            st.markdown("##### 📅 スケジュール管理")
             roll_date = exp_l_obj - timedelta(days=20)
             settle_date = exp_s_obj - timedelta(days=10)
             desc_common = f"銘柄: {ticker_name}\nLong: ${long_strike}\nShort: ${short_strike}"
