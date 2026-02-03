@@ -36,7 +36,7 @@ def get_sheet_connection():
     except Exception as e: return None, str(e)
 
 # ==========================================
-# 1. 計算ロジック (BSモデル & 鬼教官判定)
+# 1. 計算ロジック (BSモデル & コーチ判定)
 # ==========================================
 def calculate_greeks(S, K, T, r, sigma, option_type='call'):
     try:
@@ -57,34 +57,31 @@ def generate_coach_comments(delta_l, days_l, delta_s, days_s):
     comments = {"long": [], "short": [], "score": "B"}
     
     # --- Long判定 ---
-    # デルタ判定
     if delta_l >= 0.90:
-        comments["long"].append(f"✅ デルタ {delta_l:.2f}: 極めて深いDeep ITMです。ほぼ現物株と同じで、時間的減価は誤差レベルです。")
+        comments["long"].append(f"✅ 【Long】デルタ {delta_l:.2f}: 極めて深いDeep ITMです。現物株同様の動きが期待できます。")
     elif delta_l >= 0.80:
-        comments["long"].append(f"✅ デルタ {delta_l:.2f}: 十分なDeep ITMです。PMCCの土台として理想的です。")
+        comments["long"].append(f"✅ 【Long】デルタ {delta_l:.2f}: 十分なDeep ITMです。PMCCの土台として理想的です。")
     elif delta_l >= 0.70:
-        comments["long"].append(f"⚠️ デルタ {delta_l:.2f}: 少し浅いです。株価急落時のクッション性が弱まる可能性があります。")
+        comments["long"].append(f"⚠️ 【Long】デルタ {delta_l:.2f}: 少し浅いです。急落時のクッション性が弱まる可能性があります。")
     else:
-        comments["long"].append(f"❌ デルタ {delta_l:.2f}: Longとしては不適切です（OTM寄り）。これはPMCCではなくただのカレンダー・スプレッドです。")
+        comments["long"].append(f"❌ 【Long】デルタ {delta_l:.2f}: 不適切です（OTM寄り）。カレンダー・スプレッドになっています。")
 
-    # 期間判定
     if days_l > 365:
-        comments["long"].append(f"✅ 残存 {int(days_l)}日: 1年以上あり、満期まで十分な余裕があります。")
+        comments["long"].append(f"✅ 【Long】残存 {int(days_l)}日: 1年以上あり、満期まで十分な余裕があります。")
     elif days_l > 180:
-        comments["long"].append(f"✅ 残存 {int(days_l)}日: 半年以上あり、問題ありません。")
+        comments["long"].append(f"✅ 【Long】残存 {int(days_l)}日: 半年以上あり、問題ありません。")
     else:
-        comments["long"].append(f"⚠️ 残存 {int(days_l)}日: 期間が短めです。相場が逆行した際の回復期間が足りないかもしれません。")
+        comments["long"].append(f"⚠️ 【Long】残存 {int(days_l)}日: 期間が短めです。")
 
     # --- Short判定 ---
-    # デルタ判定
     if delta_s > 0.60:
-        comments["short"].append(f"❌ デルタ {delta_s:.2f}: ITMです。権利行使される可能性が非常に高く、LEAPSの利益を食いつぶします。")
+        comments["short"].append(f"❌ 【Short】デルタ {delta_s:.2f}: ITMです。権利行使されるリスクが非常に高いです。")
     elif delta_s > 0.50:
-        comments["short"].append(f"⚠️ デルタ {delta_s:.2f}: 現在値に近すぎます（ATM）。上昇益のキャップが早すぎませんか？")
+        comments["short"].append(f"⚠️ 【Short】デルタ {delta_s:.2f}: 現在値に近すぎます（ATM）。上昇益が限定的です。")
     elif 0.20 <= delta_s <= 0.45:
-        comments["short"].append(f"✅ デルタ {delta_s:.2f}: 理想的なOTMです。確率とプレミアムのバランスが良いです。")
+        comments["short"].append(f"✅ 【Short】デルタ {delta_s:.2f}: 理想的なOTMです。確率と利益のバランスが良いです。")
     else:
-        comments["short"].append(f"⚪ デルタ {delta_s:.2f}: かなり遠くのOTMです。安全ですが、受取プレミアムは少なめです。")
+        comments["short"].append(f"⚪ 【Short】デルタ {delta_s:.2f}: かなり遠くのOTMです。安全ですが受取額は少なめです。")
 
     # 総合評価
     if delta_l >= 0.80 and (0.20 <= delta_s <= 0.50): comments["score"] = "S"
@@ -152,7 +149,7 @@ st.markdown("""
         .coach-title { font-weight: bold; color: #00e676; margin-bottom: 5px; }
         .coach-item { margin-bottom: 3px; font-size: 0.95rem; }
     </style>
-    <div class="fixed-header"><span class="header-text">🇯🇵 PMCC 分析ツール (Ver 9.1 Coach)</span></div>
+    <div class="fixed-header"><span class="header-text">🇯🇵 PMCC 分析ツール (Ver 9.2)</span></div>
     """, unsafe_allow_html=True)
 
 for key in ['ticker_data', 'strikes_data', 'load_trigger']:
@@ -161,7 +158,7 @@ if 'manual_mode' not in st.session_state: st.session_state['manual_mode'] = Fals
 if 'ticker_input_val' not in st.session_state: st.session_state['ticker_input_val'] = "NVDA"
 
 # ==========================================
-# 4. サイドバー (クラウド保存)
+# 4. サイドバー
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 設定")
@@ -235,7 +232,6 @@ delta_s, theta_s = None, None
 T_l_days, T_s_days = 0, 0
 
 if st.session_state['manual_mode']:
-    # --- A. 手動モード ---
     st.info("📝 **手動モード** (Greeks計算不可)")
     col_m1, col_m2 = st.columns(2)
     with col_m1:
@@ -256,7 +252,6 @@ if st.session_state['manual_mode']:
     if st.button("分析実行", type="primary"): is_ready = True
 
 else:
-    # --- B. 自動モード ---
     col1, col2 = st.columns([3, 1])
     with col1: ticker_input = st.text_input("銘柄", key="ticker_input_val", placeholder="NVDA").upper()
     with col2: fetch_pressed = st.button("データ取得", type="primary", use_container_width=True)
@@ -350,7 +345,6 @@ else:
                     prem_l = get_price(l_row)
                     prem_s = get_bid(s_row)
                     
-                    # Greeks & Days calc
                     today = datetime.today()
                     T_l = (datetime.strptime(long_exp, '%Y-%m-%d') - today).days / 365.0
                     T_s = (datetime.strptime(short_exp, '%Y-%m-%d') - today).days / 365.0
@@ -390,11 +384,9 @@ if is_ready:
         
         st.markdown(f"### 📊 分析レポート ({ticker_name})")
         
-        # --- 鬼教官のコメント (自動モードのみ) ---
+        # --- コーチコメント ---
         if not st.session_state['manual_mode'] and delta_l is not None:
             comments = generate_coach_comments(delta_l, T_l_days, delta_s, T_s_days)
-            
-            # アイコン表示
             score = comments['score']
             if score == 'S': score_icon = "💎 Sランク (完璧)"
             elif score == 'A': score_icon = "✅ Aランク (優秀)"
@@ -402,12 +394,11 @@ if is_ready:
 
             st.markdown(f"""
             <div class="coach-box">
-                <div class="coach-title">👹 構成判定: {score_icon}</div>
+                <div class="coach-title">👨‍🏫 AIコーチ判定: {score_icon}</div>
                 {''.join([f'<div class="coach-item">{c}</div>' for c in comments['long']])}
                 {''.join([f'<div class="coach-item">{c}</div>' for c in comments['short']])}
             </div>
             """, unsafe_allow_html=True)
-        # ----------------------------------------
 
         st.markdown("##### 📋 シナリオ別 損益内訳")
         scenarios = [
@@ -422,18 +413,23 @@ if is_ready:
             val_s = max(0, p - short_strike)
             cost = -net_debit
             total = val_l - val_s + cost
+            # ROI計算
+            if total_cost > 0:
+                roi = (total / total_cost) * 100
+            else: roi = 0
+            
             table_data.append({
                 "シナリオ": sc["name"],
-                "LEAPS価値 (+)": f"${val_l:.2f}",
-                "Short義務 (-/損)": f"-${val_s:.2f}",
-                "初期コスト (-)": f"-${net_debit:.2f}",
-                "合計損益": f"${total:.2f}"
+                "LEAPS価値": f"${val_l:.2f}",
+                "Short損益": f"-${val_s:.2f}",
+                "合計損益": f"${total:.2f}",
+                "ROI": f"{roi:+.1f}%"
             })
         st.table(pd.DataFrame(table_data))
 
         m1, m2, m3 = st.columns(3)
         m1.metric("実質コスト", f"${net_debit:.2f}")
-        m2.metric("初期投資", f"${total_cost:.0f}")
+        m2.metric("初期投資", f"${total_cost:,.2f}") # カンマ追加
         m3.metric("分岐点", f"${breakeven:.2f}")
         st.caption(f"Long: ${long_strike} (支払 ${prem_l:.2f}) / Short: ${short_strike} (受取 ${prem_s:.2f})")
 
