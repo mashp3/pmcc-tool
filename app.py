@@ -9,7 +9,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import json
 import os
-from scipy.stats import norm # 数学計算用
+from scipy.stats import norm
 
 # --- フォント設定 ---
 plt.rcParams['font.family'] = 'IPAGothic'
@@ -36,30 +36,62 @@ def get_sheet_connection():
     except Exception as e: return None, str(e)
 
 # ==========================================
-# 1. 計算ロジック (ブラック・ショールズ)
+# 1. 計算ロジック (BSモデル & 鬼教官判定)
 # ==========================================
 def calculate_greeks(S, K, T, r, sigma, option_type='call'):
-    """
-    S: 株価, K: 権利行使価格, T: 残存年数, r: 金利, sigma: IV
-    """
     try:
         if T <= 0 or sigma <= 0: return None, None
-        
         d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
         d2 = d1 - sigma * np.sqrt(T)
-        
         if option_type == 'call':
             delta = norm.cdf(d1)
-            # Theta calculation (annual -> daily approximation)
             theta_annual = -(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) - r * K * np.exp(-r * T) * norm.cdf(d2)
             theta = theta_annual / 365.0
         else:
-            delta = -norm.cdf(-d1)
-            theta = 0 # Putは今回未使用
-            
+            delta = -norm.cdf(-d1); theta = 0
         return delta, theta
-    except:
-        return None, None
+    except: return None, None
+
+def generate_coach_comments(delta_l, days_l, delta_s, days_s):
+    """グリークスに基づいたコメントを生成する"""
+    comments = {"long": [], "short": [], "score": "B"}
+    
+    # --- Long判定 ---
+    # デルタ判定
+    if delta_l >= 0.90:
+        comments["long"].append(f"✅ デルタ {delta_l:.2f}: 極めて深いDeep ITMです。ほぼ現物株と同じで、時間的減価は誤差レベルです。")
+    elif delta_l >= 0.80:
+        comments["long"].append(f"✅ デルタ {delta_l:.2f}: 十分なDeep ITMです。PMCCの土台として理想的です。")
+    elif delta_l >= 0.70:
+        comments["long"].append(f"⚠️ デルタ {delta_l:.2f}: 少し浅いです。株価急落時のクッション性が弱まる可能性があります。")
+    else:
+        comments["long"].append(f"❌ デルタ {delta_l:.2f}: Longとしては不適切です（OTM寄り）。これはPMCCではなくただのカレンダー・スプレッドです。")
+
+    # 期間判定
+    if days_l > 365:
+        comments["long"].append(f"✅ 残存 {int(days_l)}日: 1年以上あり、満期まで十分な余裕があります。")
+    elif days_l > 180:
+        comments["long"].append(f"✅ 残存 {int(days_l)}日: 半年以上あり、問題ありません。")
+    else:
+        comments["long"].append(f"⚠️ 残存 {int(days_l)}日: 期間が短めです。相場が逆行した際の回復期間が足りないかもしれません。")
+
+    # --- Short判定 ---
+    # デルタ判定
+    if delta_s > 0.60:
+        comments["short"].append(f"❌ デルタ {delta_s:.2f}: ITMです。権利行使される可能性が非常に高く、LEAPSの利益を食いつぶします。")
+    elif delta_s > 0.50:
+        comments["short"].append(f"⚠️ デルタ {delta_s:.2f}: 現在値に近すぎます（ATM）。上昇益のキャップが早すぎませんか？")
+    elif 0.20 <= delta_s <= 0.45:
+        comments["short"].append(f"✅ デルタ {delta_s:.2f}: 理想的なOTMです。確率とプレミアムのバランスが良いです。")
+    else:
+        comments["short"].append(f"⚪ デルタ {delta_s:.2f}: かなり遠くのOTMです。安全ですが、受取プレミアムは少なめです。")
+
+    # 総合評価
+    if delta_l >= 0.80 and (0.20 <= delta_s <= 0.50): comments["score"] = "S"
+    elif delta_l >= 0.75: comments["score"] = "A"
+    else: comments["score"] = "C"
+
+    return comments
 
 # ==========================================
 # 2. データ取得関数
@@ -112,15 +144,15 @@ st.markdown("""
             border: 1px solid #555; font-size: 0.8rem; margin-right: 5px;
         }
         .gcal-btn:hover { background-color: #444; border-color: #00e676; }
-        /* グリークス表示用 */
-        .greek-box {
-            background-color: #1E1E1E; padding: 10px; border-radius: 5px;
-            border-left: 3px solid #00e676; margin-bottom: 10px;
+        /* コメント用 */
+        .coach-box {
+            background-color: #262730; border: 1px solid #444; border-radius: 8px;
+            padding: 15px; margin-bottom: 20px;
         }
-        .greek-val { font-weight: bold; color: #fff; }
-        .greek-label { font-size: 0.8rem; color: #aaa; }
+        .coach-title { font-weight: bold; color: #00e676; margin-bottom: 5px; }
+        .coach-item { margin-bottom: 3px; font-size: 0.95rem; }
     </style>
-    <div class="fixed-header"><span class="header-text">🇯🇵 PMCC 分析ツール (Ver 9.0 Greeks)</span></div>
+    <div class="fixed-header"><span class="header-text">🇯🇵 PMCC 分析ツール (Ver 9.1 Coach)</span></div>
     """, unsafe_allow_html=True)
 
 for key in ['ticker_data', 'strikes_data', 'load_trigger']:
@@ -198,9 +230,9 @@ exp_l_obj = None
 exp_s_obj = None
 is_ready = False
 ticker_name = "MANUAL"
-# Greeks用変数
 delta_l, theta_l = None, None
 delta_s, theta_s = None, None
+T_l_days, T_s_days = 0, 0
 
 if st.session_state['manual_mode']:
     # --- A. 手動モード ---
@@ -265,29 +297,23 @@ else:
         auto_load = False
         if loaded: auto_load = True
 
-        # ストライク取得 (IVも含めて保持するためにchain全体を保存する必要あり)
         if 'chain_cache' not in st.session_state: st.session_state['chain_cache'] = {}
-
         if st.button("ストライク読込", use_container_width=True) or auto_load:
             with st.spinner("チェーン取得中..."):
                 l_chain, err1 = fetch_option_chain_data(data['ticker'], long_exp)
                 s_chain, err2 = fetch_option_chain_data(data['ticker'], short_exp)
                 if err1 or err2: st.error("取得エラー")
                 else:
-                    # IVデータの保持
                     st.session_state['chain_cache']['l'] = l_chain
                     st.session_state['chain_cache']['s'] = s_chain
-                    
                     strikes_l = sorted(l_chain['strike'].unique())
                     strikes_s = sorted(s_chain['strike'].unique())
-                    
                     if loaded and 'long_strike' in loaded:
                         def_l = min(strikes_l, key=lambda x:abs(x-loaded['long_strike']))
                         def_s = min(strikes_s, key=lambda x:abs(x-loaded['short_strike']))
                     else:
                         def_l = min(strikes_l, key=lambda x:abs(x-(data['price']*0.60)))
                         def_s = min(strikes_s, key=lambda x:abs(x-(data['price']*1.15)))
-
                     st.session_state['strikes_data'] = {'long_exp': long_exp, 'short_exp': short_exp, 'strikes_l': strikes_l, 'strikes_s': strikes_s, 'def_l': def_l, 'def_s': def_s}
         
         if loaded: st.session_state['load_trigger'] = None
@@ -306,40 +332,36 @@ else:
                 short_strike = st.selectbox("Short Strike", s_data['strikes_s'], index=d_idx)
             
             if st.button("分析実行", type="primary", use_container_width=True):
-                # データ再取得せずキャッシュから利用
                 l_chain = st.session_state['chain_cache'].get('l')
                 s_chain = st.session_state['chain_cache'].get('s')
-                
                 if l_chain is not None and s_chain is not None:
                     l_row = l_chain[l_chain['strike'] == long_strike].iloc[0]
                     s_row = s_chain[s_chain['strike'] == short_strike].iloc[0]
                     
                     def get_price(row):
-                        val = row.get('ask', 0) if 'ask' in row else 0 # LongはAsk
+                        val = row.get('ask', 0) if 'ask' in row else 0
                         if pd.isna(val) or val <= 0: return row.get('lastPrice', 0)
                         return val
                     def get_bid(row):
-                        val = row.get('bid', 0) if 'bid' in row else 0 # ShortはBid
+                        val = row.get('bid', 0) if 'bid' in row else 0
                         if pd.isna(val) or val <= 0: return row.get('lastPrice', 0)
                         return val
 
                     prem_l = get_price(l_row)
                     prem_s = get_bid(s_row)
                     
-                    # --- Greeks計算 ---
-                    # 残存年数 T
+                    # Greeks & Days calc
                     today = datetime.today()
                     T_l = (datetime.strptime(long_exp, '%Y-%m-%d') - today).days / 365.0
                     T_s = (datetime.strptime(short_exp, '%Y-%m-%d') - today).days / 365.0
-                    # IV取得
+                    T_l_days = (datetime.strptime(long_exp, '%Y-%m-%d') - today).days
+                    T_s_days = (datetime.strptime(short_exp, '%Y-%m-%d') - today).days
+                    
                     iv_l = l_row.get('impliedVolatility', 0)
                     iv_s = s_row.get('impliedVolatility', 0)
-                    # 金利 (固定4.5%とする)
                     r = 0.045
-                    
                     delta_l, theta_l = calculate_greeks(price, long_strike, T_l, r, iv_l, 'call')
                     delta_s, theta_s = calculate_greeks(price, short_strike, T_s, r, iv_s, 'call')
-                    
                     is_ready = True
                     
             st.session_state['long_strike_val'] = long_strike
@@ -368,42 +390,23 @@ if is_ready:
         
         st.markdown(f"### 📊 分析レポート ({ticker_name})")
         
-        # --- Greeks表示 & 判定 (自動モードのみ) ---
+        # --- 鬼教官のコメント (自動モードのみ) ---
         if not st.session_state['manual_mode'] and delta_l is not None:
-            st.markdown("##### 🧬 Greeks & 構成判定")
-            g1, g2 = st.columns(2)
+            comments = generate_coach_comments(delta_l, T_l_days, delta_s, T_s_days)
             
-            # 判定ロジック
-            # Long: Delta >= 0.80
-            is_l_good = delta_l >= 0.80
-            l_color = "#00e676" if is_l_good else "#ffb74d"
-            l_icon = "✅" if is_l_good else "⚠️"
-            
-            # Short: Delta 0.20 ~ 0.40 (画像では0.30推奨)
-            is_s_good = 0.20 <= delta_s <= 0.40
-            s_color = "#00e676" if is_s_good else "#ffb74d"
-            s_icon = "✅" if is_s_good else "⚠️"
-            
-            with g1:
-                st.markdown(f"""
-                <div class="greek-box" style="border-left-color: {l_color};">
-                    <div>Long (LEAPS) {l_icon}</div>
-                    <div class="greek-val">Δ {delta_l:.2f} / Θ {theta_l:.3f}</div>
-                    <div class="greek-label">目標: Δ 0.80以上 (Deep ITM)</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with g2:
-                st.markdown(f"""
-                <div class="greek-box" style="border-left-color: {s_color};">
-                    <div>Short (Call) {s_icon}</div>
-                    <div class="greek-val">Δ {delta_s:.2f} / Θ {theta_s:.3f}</div>
-                    <div class="greek-label">目標: Δ 0.30付近 (OTM)</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            if is_l_good and is_s_good:
-                st.info("💎 **素晴らしい構成です！** 教科書通りの理想的なPMCCセットアップです。")
-        
+            # アイコン表示
+            score = comments['score']
+            if score == 'S': score_icon = "💎 Sランク (完璧)"
+            elif score == 'A': score_icon = "✅ Aランク (優秀)"
+            else: score_icon = "⚠️ Bランク (要調整)"
+
+            st.markdown(f"""
+            <div class="coach-box">
+                <div class="coach-title">👹 構成判定: {score_icon}</div>
+                {''.join([f'<div class="coach-item">{c}</div>' for c in comments['long']])}
+                {''.join([f'<div class="coach-item">{c}</div>' for c in comments['short']])}
+            </div>
+            """, unsafe_allow_html=True)
         # ----------------------------------------
 
         st.markdown("##### 📋 シナリオ別 損益内訳")
