@@ -149,7 +149,7 @@ st.markdown("""
         .coach-title { font-weight: bold; color: #00e676; margin-bottom: 5px; }
         .coach-item { margin-bottom: 3px; font-size: 0.95rem; }
     </style>
-    <div class="fixed-header"><span class="header-text">🇯🇵 PMCC 分析ツール (Ver 9.3)</span></div>
+    <div class="fixed-header"><span class="header-text">🇯🇵 PMCC 分析ツール (Ver 9.4)</span></div>
     """, unsafe_allow_html=True)
 
 for key in ['ticker_data', 'strikes_data', 'load_trigger']:
@@ -413,7 +413,8 @@ if is_ready:
             val_s = max(0, p - short_strike)
             cost = -net_debit
             total = val_l - val_s + cost
-            if total_cost > 0: roi = (total / total_cost) * 100
+            # ROI計算 (修正: 1株あたり利益 / 1株あたりコスト)
+            if net_debit > 0: roi = (total / net_debit) * 100
             else: roi = 0
             
             table_data.append({
@@ -451,10 +452,9 @@ if is_ready:
             st.divider()
             st.markdown("##### 📅 スケジュール管理")
             
-            # --- ここからカレンダー日付の自動リカバリーロジック ---
             today_date = datetime.now().date()
             
-            # 1. LEAPSロール (推奨: 180日前)
+            # 1. LEAPSロール (半年/180日前)
             ideal_roll = exp_l_obj - timedelta(days=180)
             if ideal_roll < today_date:
                 roll_target = today_date
@@ -465,7 +465,7 @@ if is_ready:
                 roll_title_pfx = "【PMCC】"
                 roll_desc_sf = "\n満期半年前目安"
             
-            # 2. Short決済 (推奨: 21日前)
+            # 2. Short決済 (21日前)
             ideal_settle = exp_s_obj - timedelta(days=21)
             if ideal_settle < today_date:
                 settle_target = today_date
