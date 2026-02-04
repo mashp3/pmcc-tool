@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from urllib.parse import quote
 import gspread
 from google.oauth2.service_account import Credentials
@@ -149,7 +149,7 @@ st.markdown("""
         .coach-title { font-weight: bold; color: #00e676; margin-bottom: 5px; }
         .coach-item { margin-bottom: 3px; font-size: 0.95rem; }
     </style>
-    <div class="fixed-header"><span class="header-text">🇯🇵 PMCC 分析ツール (Ver 9.2)</span></div>
+    <div class="fixed-header"><span class="header-text">🇯🇵 PMCC 分析ツール (Ver 9.3)</span></div>
     """, unsafe_allow_html=True)
 
 for key in ['ticker_data', 'strikes_data', 'load_trigger']:
@@ -413,9 +413,7 @@ if is_ready:
             val_s = max(0, p - short_strike)
             cost = -net_debit
             total = val_l - val_s + cost
-            # ROI計算
-            if total_cost > 0:
-                roi = (total / total_cost) * 100
+            if total_cost > 0: roi = (total / total_cost) * 100
             else: roi = 0
             
             table_data.append({
@@ -429,7 +427,7 @@ if is_ready:
 
         m1, m2, m3 = st.columns(3)
         m1.metric("実質コスト", f"${net_debit:.2f}")
-        m2.metric("初期投資", f"${total_cost:,.2f}") # カンマ追加
+        m2.metric("初期投資", f"${total_cost:,.2f}")
         m3.metric("分岐点", f"${breakeven:.2f}")
         st.caption(f"Long: ${long_strike} (支払 ${prem_l:.2f}) / Short: ${short_strike} (受取 ${prem_s:.2f})")
 
@@ -452,20 +450,45 @@ if is_ready:
         if exp_l_obj and exp_s_obj:
             st.divider()
             st.markdown("##### 📅 スケジュール管理")
-            roll_date = exp_l_obj - timedelta(days=20)
-            settle_date = exp_s_obj - timedelta(days=10)
+            
+            # --- ここからカレンダー日付の自動リカバリーロジック ---
+            today_date = datetime.now().date()
+            
+            # 1. LEAPSロール (推奨: 180日前)
+            ideal_roll = exp_l_obj - timedelta(days=180)
+            if ideal_roll < today_date:
+                roll_target = today_date
+                roll_title_pfx = "【緊急】"
+                roll_desc_sf = f"\n⚠️ 本来の推奨日: {ideal_roll} (過ぎています)"
+            else:
+                roll_target = ideal_roll
+                roll_title_pfx = "【PMCC】"
+                roll_desc_sf = "\n満期半年前目安"
+            
+            # 2. Short決済 (推奨: 21日前)
+            ideal_settle = exp_s_obj - timedelta(days=21)
+            if ideal_settle < today_date:
+                settle_target = today_date
+                settle_title_pfx = "【緊急】"
+                settle_desc_sf = f"\n⚠️ 本来の推奨日: {ideal_settle} (過ぎています)"
+            else:
+                settle_target = ideal_settle
+                settle_title_pfx = "【PMCC】"
+                settle_desc_sf = "\n満期21日前目安"
+                
             desc_common = f"銘柄: {ticker_name}\nLong: ${long_strike}\nShort: ${short_strike}"
             
             url_s_exp = create_gcal_url(f"【PMCC】Short満期 ({ticker_name})", exp_s_obj, desc_common)
             url_l_exp = create_gcal_url(f"【PMCC】LEAPS満期 ({ticker_name})", exp_l_obj, desc_common)
-            url_roll = create_gcal_url(f"【PMCC】LEAPSロール ({ticker_name})", roll_date, f"{desc_common}\n満期20日前")
-            url_settle = create_gcal_url(f"【PMCC】Short決済 ({ticker_name})", settle_date, f"{desc_common}\n満期10日前")
+            
+            url_roll = create_gcal_url(f"{roll_title_pfx}LEAPSロール ({ticker_name})", roll_target, f"{desc_common}{roll_desc_sf}")
+            url_settle = create_gcal_url(f"{settle_title_pfx}Short決済 ({ticker_name})", settle_target, f"{desc_common}{settle_desc_sf}")
 
             gc1, gc2, gc3, gc4 = st.columns(4)
             with gc1: st.markdown(f"**Short満期**<br>{exp_s_obj}<br><a href='{url_s_exp}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
-            with gc2: st.markdown(f"**Short決済目安**<br>{settle_date}<br><a href='{url_settle}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
+            with gc2: st.markdown(f"**Short決済目安**<br>{settle_target}<br><a href='{url_settle}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
             with gc3: st.markdown(f"**LEAPS満期**<br>{exp_l_obj}<br><a href='{url_l_exp}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
-            with gc4: st.markdown(f"**LEAPSロール目安**<br>{roll_date}<br><a href='{url_roll}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
+            with gc4: st.markdown(f"**LEAPSロール目安**<br>{roll_target}<br><a href='{url_roll}' target='_blank' class='gcal-btn'>＋カレンダー登録</a>", unsafe_allow_html=True)
 
     except Exception as e:
         st.error(f"計算エラー: {e}")
